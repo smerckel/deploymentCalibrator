@@ -4,6 +4,7 @@ import os
 
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.integrate import odeint
 
 import dbdreader
 from profiles.ctd import ThermalLag
@@ -70,12 +71,14 @@ class DeploymentCalibrator(object):
 
     def __init__(self, glider, path, interval,
                  thermal_lag_coefs=(0.011, 0.073),
-                 pitch_correction_coefs=(1.,0.)):
+                 pitch_correction_coefs=(1.,0.),
+                 **kwds):
         self.glider = glider
         self.path = path
         self.interval = interval
         self.pitch_correction_coefs = pitch_correction_coefs
         self.thermal_lag_coefs = thermal_lag_coefs
+        self.dbd_kwds = kwds
         self.data_cache = {}
         
     def get_filename_pattern(self):
@@ -135,7 +138,9 @@ class DeploymentCalibrator(object):
 
     def add_density(self, data, lat, lon):
         ''' Adds density to the data dictionary
-
+        
+        Parameters
+        ----------
         data : dictionary
                a data dictionary
         lat : float
@@ -154,35 +159,86 @@ class DeploymentCalibrator(object):
         D=data['D']
         density = easy_gsw.density_from_C_t(C, T, D, lon, lat)
         data['density']=density
+
+
+    def rate_model(self, y, t, tau, pump_on_fun):
+        """Define the right-hand side of equation dy/dt = a*y"""
+        delta = (pump_on_fun(t)-y)
+        if delta>0:
+            _tau=1
+        else:
+            _tau=tau
+        f = delta/_tau
+        return f
+
         
-    def calibrate_segment(self, glider_model, fns, min_depth, max_depth, parameters):
+    def is_pumping(self, t, b, tau, limit=0.1):
+        ''' Is the glider pumping, allowing for a fade out time of tau? 
+
+        Parameters
+        ----------
+        t : array
+            time in seconds
+        b : array
+            buoyancy drive in cc
+        tau : float
+              time allowed for the effect of pumping to fade
+        limit : float (default 0.1)
+                threshold to determine when the pump is moving (db/dt > limit)
+        
+        Returns
+        -------
+        y : array
+            indication of the pump moving, where 0 <= y <= 1. At y=0.5 we would have
+            waited about tau seconds after switching of the pump.
+        '''
+        dbdt = np.gradient(b)/np.gradient(t)
+        pump_on = (np.abs(dbdt)>limit).astype(int)
+        pump_on_fun = interp1d(t, pump_on, fill_value=0, bounds_error=False)
+        y0=0.
+        y = odeint(self.rate_model, y0, t, hmax=5, args=(tau,pump_on_fun))
+        return y.squeeze()
+
+
+    def calibrate_segment(self, glider_model, fns, parameters, min_depth=None, max_depth=None, seconds_to_discard_after_pumping=None):
         ''' Calibrate the model for a data segment
 
         Not to be called directly
         '''
         data = self.get_data_dictionary(filenames=fns)
         glider_model.set_input_data(**data)
-        glider_model.OR(data['pressure']*10<min_depth)
-        glider_model.OR(data['pressure']*10>max_depth)
+        if not min_depth is None:
+            glider_model.OR(data['pressure']*10<min_depth)
+        if not max_depth is None:
+            glider_model.OR(data['pressure']*10>max_depth)
+        if not seconds_to_discard_after_pumping is None:
+            pumping = self.is_pumping(data['time'], data['buoyancy_change'], seconds_to_discard_after_pumping)
+            glider_model.OR(pumping>0.5)
         calibration_result = glider_model.calibrate(*parameters, verbose=True)
         return calibration_result
     
         
-    def calibrate(self, glider_model,
+    def calibrate(self, glider_model,parameters=["Cd0", "Vg"],
                   min_depth=10,
-                  max_depth=40, parameters=["Cd0", "Vg"]):
-        ''' Calibrate the glider model
+                  max_depth=None,
+                  seconds_to_discard_after_pumping=None):
+    
+        '''Calibrate the glider model
 
         Parameters
         ----------
         glider_model : gliderflight GliderModel
                        a flight model, either steady state or dynamic.
-        min_depth    : float
-                       minimum depth
-        max_depth    : float
-                       maximum depth
         parameters   : list of parameter strings
                        names of model coefficients that should be optimised.
+        min_depth    : float or None
+                       minimum depth
+        max_depth    : float or None
+                       maximum depth
+        seconds_to_discard_after_pumping : float or None
+                       all data points gathered within this amount of
+                       seconds after the pump stops starting from the
+                       beginning of pummping are discarded.
         
         Returns
         -------
@@ -191,6 +247,7 @@ class DeploymentCalibrator(object):
                 
         The calibration method minimises a cost function. All data points that have
         a depth shallower than min_depth or a depth deeper than max_depth are excluded.
+
         '''
        
         binned_filenames = self.get_filename_list_per_interval()
@@ -199,13 +256,34 @@ class DeploymentCalibrator(object):
         d = dict([(t, np.zeros(N_segments, float)) for t in parameters + ["t"]])
 
         for i, (tm, fns) in enumerate(binned_filenames):
-            r = self.calibrate_segment(glider_model, fns, min_depth, max_depth, parameters)
+            r = self.calibrate_segment(glider_model, fns, parameters, min_depth, max_depth, seconds_to_discard_after_pumping)
             d['t'][i] = tm
             for j, p in enumerate(parameters):
                 d[p][i] = glider_model.__dict__[p]
         return d
 
     def get_data_dictionary(self, pattern=None, filenames=[]):
+        '''Reads dbd files and puts selected data into a dictionary
+
+        Parameters
+        ----------
+        pattern   : None | string
+                  A path, possibly containing wildcards, to select one or more files
+        filenames : None | list of strings
+                  A list of filenames
+
+        Returns
+        -------
+        data : dictionary with data
+
+
+        This method reads dbd files and stores selected parameters
+        into a dictionary. The filenames to be read can be specified,
+        either by a list of filenames or a pattern with wild
+        cards. The method recognizes when a dictionary is requested
+        multiple times for the same set of files, and returns cached
+        data in such instance.
+        '''
         if not pattern is None:
             filenames = dbdreader.DBDList(glob.glob(pattern))
             filenames.sort()
@@ -215,12 +293,18 @@ class DeploymentCalibrator(object):
         except KeyError:
             pass
         else:
-            print("Returning cached data")
             return data
         # if we get here, there were no data in the cache.
-        dbds = dbdreader.MultiDBD(pattern=pattern, filenames=filenames, include_paired=True)
-        tmp = dbds.get_sync("sci_ctd41cp_timestamp", "sci_water_cond sci_water_temp sci_water_pressure m_pitch m_ballast_pumped m_heading".split())
-        t, tctd, C, T, P, pitch, buoyancy_change, heading = tmp.compress(tmp[2]>0, axis=1)
+        dbds = dbdreader.MultiDBD(pattern=None, filenames=filenames, include_paired=True,
+                                  **self.dbd_kwds)
+        tmp = dbds.get_sync("sci_ctd41cp_timestamp", "sci_water_cond sci_water_temp sci_water_pressure m_pitch m_heading".split())
+        t, tctd, C, T, P, pitch, heading = tmp.compress(tmp[2]>0, axis=1)
+        # Let's figure out which buoyancy variable to use. Try m_ballast_pumped first.
+        _buoyancy_change = dbds.get("m_ballast_pumped")
+        if np.allclose(_buoyancy_change, 0, rtol=1e-5):
+            _buoyancy_change = dbds.get("m_de_oil_vol")
+        # interpolate to t
+        buoyancy_change = np.interp(t, *_buoyancy_change)
         _, lat, lon = dbds.get_sync("m_gps_lat", ["m_gps_lon"])
         lat = np.median(lat)
         lon = np.median(lon)
@@ -241,39 +325,65 @@ class DeploymentCalibrator(object):
         return data
     
     def compute_glider_velocity(self, glider_model, coef_functions={}):
+        '''Compute glider velocity using given glider model and, optionally,
+           interpolating functions for model coefficients.
+
+        Parameters
+        ----------
+        glider_model : an instance of a gliderflight glider model 
+                       (SteadyStateGliderModel or DynamicGliderModel)
+        coef_functions : a dictionary of interpolating functions
+        
+        Returns
+        -------
+        model_result : a named tuple with glider flight model results
+
+        This method takes a glider flight model and computes, with the given settings
+        the glider flight velocities. An optional dictionary with interpolating functions
+        for one or more coefficients can be supplied. These functions override the constant
+        values of named coefficients. 
+
+        The result returned is a named tuple, as defined in the gliderflight module, but with
+        heading as extra field, so that the results retured contain
+
+        t : time in seconds since epoch
+        u : horizontal velocity through water m/s
+        w : vertical velocity through water m/s
+        U : incident water velocity m/s
+        alpha : angle of attack rad
+        pitch : pitch rad
+        ww : vertical water velocity m/s (dh/dt - w)
+        heading : heading rad
+        '''
         p = self.get_filename_pattern()
         data = self.get_data_dictionary(pattern=p)
         for k, f in coef_functions.items():
             glider_model.define(k=f)
         model_result = glider_model.solve(data)
-        Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww heading".split())
-        model_resultxtd = Modelresultxtd(*model_result, data['heading'])
+        Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww heading depth".split())
+        model_resultxtd = Modelresultxtd(*model_result, data['heading'], data['pressure']*10)
         return model_resultxtd 
     
     def construct_ifun(self, calibration_result, parameter):
+        '''Constructor of interpolating function
+
+        Parameters
+        ----------
+        calibration_result : dictionary with results from the calibrate() method
+        parameter : name of parameter to construct an interpolating function for
+        
+        Returns
+        -------
+        ifun : interpolating function (scipy.interp1d)
+
+        This method can be used to construct a suitable interpolating
+        function for the coef_functions dictionary that can be
+        supplied to the method compute_glider_velocity(). It takes the
+        input from the calibration() method, which calibrates the data
+        in time intervals, producing a time series for one or more
+        calibrated model coefficients.
+        '''
         t = calibration_result['t']
         x = calibration_result[parameter]
-        return interp1d(t, x, bounds_error=False, fill_value=(x.min(), x.max()))
-
-
-if 0:
-    import gliderflight
-    DM = gliderflight.DynamicCalibrate(rho0=1006, dt=0.1)
-    GM = gliderflight.SteadyStateCalibrate(rho0=1006)
-    GM.define(ah=3.8, Cd1=10.5, mg=70.1, Vg=70/1006, Cd0=0.15)
-
-
-    pitch_correction_coefs = (0.8308, -0.006)
-    mc = DeploymentCalibrator(glider='comet', path="/home/lucas/gliderdata/latvia201711_test/hd",
-                              interval=86400,
-                              pitch_correction_coefs=pitch_correction_coefs)
-
-
-    calibration_results = mc.calibrate(glider_model=GM, parameters="Cd0 Vg".split(), min_depth=10, max_depth=40)
-    DM.copy_settings(GM)
-    DM.define(Vg=calibration_results['Vg'].mean())
-    calibration_results = mc.calibrate(glider_model=GM, parameters="Cd0".split(), min_depth=10, max_depth=40)
-
-    coef_functions = dict(Cd0=mc.construct_ifun(calibration_results, 'Cd0'))
-
-    model_result = mc.compute_glider_velocity(GM, coef_functions)
+        ifun = interp1d(t, x, bounds_error=False, fill_value=(x.min(), x.max()))
+        return ifun
