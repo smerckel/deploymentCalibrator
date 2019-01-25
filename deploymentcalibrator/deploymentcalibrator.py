@@ -256,7 +256,14 @@ class DeploymentCalibrator(object):
         d = dict([(t, np.zeros(N_segments, float)) for t in parameters + ["t"]])
 
         for i, (tm, fns) in enumerate(binned_filenames):
-            r = self.calibrate_segment(glider_model, fns, parameters, min_depth, max_depth, seconds_to_discard_after_pumping)
+            print("Processing segment %d of a total of %d."%(i+1, N_segments))
+            try:
+                r = self.calibrate_segment(glider_model, fns, parameters, min_depth, max_depth, seconds_to_discard_after_pumping)
+            except ValueError as e:
+                if e.args[0] == "All selected data files were banned.":
+                    continue
+                else:
+                    raise(e)
             d['t'][i] = tm
             for j, p in enumerate(parameters):
                 d[p][i] = glider_model.__dict__[p]
@@ -297,11 +304,25 @@ class DeploymentCalibrator(object):
         # if we get here, there were no data in the cache.
         dbds = dbdreader.MultiDBD(pattern=None, filenames=filenames, include_paired=True,
                                   **self.dbd_kwds)
-        tmp = dbds.get_sync("sci_ctd41cp_timestamp", "sci_water_cond sci_water_temp sci_water_pressure m_pitch m_heading".split())
-        t, tctd, C, T, P, pitch, heading = tmp.compress(tmp[2]>0, axis=1)
+        tmp = dbds.get_sync("sci_ctd41cp_timestamp", "sci_water_cond sci_water_temp sci_water_pressure m_pitch".split())
+        t, tctd, C, T, P, pitch = tmp.compress(tmp[2]>0, axis=1)
+
+        # for extracting the heading we have to proceed with a bit of
+        # care. Simple interpolation (by including m_heading in the
+        # get_sync() method above, can result in jumpy values around
+        # North crossings. This creates problems when the glider is
+        # moving north and many crossings occur during a profile.
+
+        t_hdg, hdg = dbds.get("m_heading")
+        x = np.cos(hdg)
+        y = np.sin(hdg)
+        xi = np.interp(tctd, t_hdg, x)
+        yi = np.interp(tctd, t_hdg, y)
+        heading = np.arctan2(yi, xi)
+
         # Let's figure out which buoyancy variable to use. Try m_ballast_pumped first.
         _buoyancy_change = dbds.get("m_ballast_pumped")
-        if np.allclose(_buoyancy_change, 0, rtol=1e-5):
+        if np.allclose(_buoyancy_change[1], 0, rtol=1e-5):
             _buoyancy_change = dbds.get("m_de_oil_vol")
         # interpolate to t
         buoyancy_change = np.interp(t, *_buoyancy_change)
