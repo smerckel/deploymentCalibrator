@@ -35,8 +35,8 @@ class NetCDF_HZG(object):
     >>> nc.add_parameter("northward current", "m/s" , velocity.t, velocity.z, velocity.v)
     >>> nc.add_parameter("upward current", "m/s" , velocity.t, velocity.z, velocity.w)
     '''
-    def __init__(self, filename, title="", source="", originator="", contact="", crs='WGS84'):
-        self.dataset = Dataset(filename, mode='w')
+    def __init__(self, filename, mode='w', title="", source="", originator="", contact="", crs='WGS84'):
+        self.dataset = Dataset(filename, mode=mode)
         self.dims = {}
         self.dataset.title = title
         self.dataset.source = source
