@@ -536,12 +536,15 @@ class DeploymentCalibrator(object):
         binned_filenames = self.get_binned_filenames()
         data = None
         for i, (tm, fns) in enumerate(binned_filenames):
-            #if i+1>3:
-            #    continue
             try:
                 _data = self.get_data_dictionary(filenames = fns)
             except ValueError:
                 continue
+            except dbdreader.DbdError as e:
+                if e.value == dbdreader.DBD_ERROR_ALL_FILES_BANNED:
+                    continue
+                else:
+                    raise(e)
             else:
                 if _data is None:
                     continue
