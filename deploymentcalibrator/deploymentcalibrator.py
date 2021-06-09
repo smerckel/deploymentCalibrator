@@ -14,7 +14,7 @@ from profiles.ctd import ThermalLag, iterprofiles
 
 from . import easy_gsw
 
-logger = getLogger()
+logger = getLogger("DeploymentCalibrator")
 basicConfig(level=INFO)
 
 Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww heading depth lat lon density SA CT pot_density buoyancy_change C T P Craw".split())
@@ -366,11 +366,12 @@ class DeploymentCalibrator(object):
         for i, (tm, fns) in enumerate(binned_filenames):
             #if i+1 >3:
             #    continue
-            print("(%s) Processing segment %d/%d."%(self.glider, i+1, N_segments), end=' ')
+            mesg = f"({self.glider}) Processing segment {i+1}/{N_segments}. "
             T0 = arrow.get(tm)
             T1 = arrow.get(tm+self.interval)
             fmt="HH:MM DD/MM/YY"
-            print(f"{T0.format(fmt)} -> {T1.format(fmt)} ({len(fns)})")
+            mesg += f"{T0.format(fmt)} -> {T1.format(fmt)} ({len(fns)})"
+            logger.info(mesg)
             if not fns:
                 continue
             # set any calibrated parameters from a previous loop
@@ -392,9 +393,9 @@ class DeploymentCalibrator(object):
             d['t'].append(tm)
             for j, p in enumerate(parameters):
                 d[p].append(glider_model.__dict__[p])
-            d = dict( (k, np.array(v)) for k,v in d.items()) # return a normal dictionary with lists converted to numpy arrays
-            if output_filename:
-                self.write_calibration_results(output_filename, d)
+        d = dict( (k, np.array(v)) for k,v in d.items()) # return a normal dictionary with lists converted to numpy arrays
+        if output_filename:
+            self.write_calibration_results(output_filename, d)
         return d
     
     
@@ -564,6 +565,9 @@ class DeploymentCalibrator(object):
         for k, f in coef_fun.items():
             glider_model.__dict__[k] = f(data["time"])
         model_result = glider_model.solve(data)
+        # We have Craw only when the thermal correction is applied.
+        if not 'Craw' in data:
+            data['Craw'] = data['C']
         model_resultxtd = Modelresultxtd(*model_result, data['heading'], data['pressure']*10,
                                          data['lat'], data['lon'], data['density'], data['SA'],
                                          data['CT'], data['pot_density'], data['buoyancy_change'],
@@ -670,7 +674,8 @@ class DeploymentCalibrator(object):
         binned_filenames = self.get_filename_list_per_interval()
         N_segments = len(binned_filenames)
         if not self.max_segments is None and N_segments > self.max_segments:
-            print(f"({self.glider}) Processing first {self.max_segments} out of {N_segments} only.")
+            mesg = f"({self.glider}) Processing first {self.max_segments} out of {N_segments} only."
+            logger.info(mesg)
             binned_filenames = binned_filenames[:self.max_segments]
         return binned_filenames
 
