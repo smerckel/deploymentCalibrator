@@ -1,4 +1,4 @@
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import glob
 import os
 import pickle
@@ -361,7 +361,7 @@ class DeploymentCalibrator(object):
         binned_filenames = self.get_binned_filenames()
         N_segments = len(binned_filenames)
 
-        d = dict([(t, np.zeros(N_segments, float)) for t in parameters + ["t"]])
+        d = defaultdict(lambda : list())
 
         for i, (tm, fns) in enumerate(binned_filenames):
             #if i+1 >3:
@@ -389,9 +389,10 @@ class DeploymentCalibrator(object):
                     raise(e)
             if r is None: # no calibration results returned because of no data.
                 continue
-            d['t'][i] = tm
+            d['t'].append(tm)
             for j, p in enumerate(parameters):
-                d[p][i] = glider_model.__dict__[p]
+                d[p].append(glider_model.__dict__[p])
+            d = dict( (k, np.array(v)) for k,v in d.items()) # return a normal dictionary with lists converted to numpy arrays
             if output_filename:
                 self.write_calibration_results(output_filename, d)
         return d
