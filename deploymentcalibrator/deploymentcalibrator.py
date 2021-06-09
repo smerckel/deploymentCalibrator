@@ -353,7 +353,11 @@ class DeploymentCalibrator(object):
         a depth shallower than min_depth or a depth deeper than max_depth are excluded.
 
         '''
-       
+        undef_params = glider_model.undefined_parameters()
+        if undef_params:
+            s = "All glider model parameters must be defined.\n"
+            s +="Missing parameters: "+ " ".join(undef_params)
+            raise ValueError(s)
         binned_filenames = self.get_binned_filenames()
         N_segments = len(binned_filenames)
 
