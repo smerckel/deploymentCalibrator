@@ -17,7 +17,7 @@ from . import easy_gsw
 logger = getLogger("DeploymentCalibrator")
 basicConfig(level=INFO)
 
-Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww heading depth lat lon density SA CT pot_density buoyancy_change C T P Craw".split())
+Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww z heading depth lat lon density SA CT pot_density buoyancy_change C T P Craw".split())
 
 class DeploymentCalibrator(object):
     '''A class to calibrate the glider flight model for a full deployment
@@ -46,8 +46,10 @@ class DeploymentCalibrator(object):
              the pitch reported by the glider is adjusted with the two coefficients
              given. The first coefficient is a scaling factor, the second an offset.
 
-    max_segments : None or int
-        max number of segments to be processed. If None, all are processed.
+    segments : None or int or tuple
+        None: all segments are processed
+        int:  positive first n segments; negative last n segments
+        tuple: all segments between first and second element are processed.
 
     neutral_buoyancy_drive : float (0.0)
         assumed buoyancy drive when glider is neutral. A non-zero value would be used for a
@@ -94,7 +96,7 @@ class DeploymentCalibrator(object):
     def __init__(self, glider, path, interval,
                  thermal_lag_coefs=None, 
                  pitch_correction_coefs=None,
-                 max_segments=None,
+                 segments=None,
                  neutral_buoyancy_drive=0,
                  **kwds):
         self.glider = glider
@@ -102,7 +104,7 @@ class DeploymentCalibrator(object):
         self.interval = interval
         self.pitch_correction_coefs = pitch_correction_coefs
         self.thermal_lag_coefs = thermal_lag_coefs
-        self.max_segments=max_segments
+        self.segments = segments
         self.neutral_buoyancy_drive = neutral_buoyancy_drive
         self.dbd_kwds = kwds
         self.data_cache = {}
@@ -271,7 +273,7 @@ class DeploymentCalibrator(object):
         return mask.astype(bool), len(ps)
         
     def calibrate_segment(self, glider_model, fns, parameters, min_depth=None, max_depth=None,
-                          seconds_to_discard_after_pumping=None, balance_up_down=False):
+                          seconds_to_discard_after_pumping=None, balance_up_down=False, constraints=('dhdt')):
         ''' Calibrate the model for a data segment
 
         Not to be called directly
@@ -308,7 +310,7 @@ class DeploymentCalibrator(object):
             logger.warning(f"All data in this segment are masked. Max depth: {glider_model.input_data['pressure'].max()*10:.1f} m. Number of profiles found: {n_profiles}.")
             return None
         logger.info(f"Calibrating for {n_profiles} profiles.")
-        calibration_result = glider_model.calibrate(*parameters, weights=weights, verbose=True)
+        calibration_result = glider_model.calibrate(*parameters, constraints=constraints, weights=weights, verbose=True)
         return calibration_result
     
         
@@ -318,7 +320,8 @@ class DeploymentCalibrator(object):
                   max_depth=None,
                   seconds_to_discard_after_pumping=None,
                   balance_up_down = False,
-                  output_filename=None):
+                  output_filename=None,
+                  constraints=('dhdt')):
         '''Calibrate the glider model
 
         Parameters
@@ -382,7 +385,7 @@ class DeploymentCalibrator(object):
                 glider_model.__dict__[k] = v[i]
             try:
                 r = self.calibrate_segment(glider_model, fns, parameters, min_depth, max_depth,
-                                           seconds_to_discard_after_pumping, balance_up_down)
+                                           seconds_to_discard_after_pumping, balance_up_down, constraints)
             except ValueError as e:
                 if e.args[0] == "All selected data files were banned.":
                     continue
@@ -673,10 +676,18 @@ class DeploymentCalibrator(object):
         '''
         binned_filenames = self.get_filename_list_per_interval()
         N_segments = len(binned_filenames)
-        if not self.max_segments is None and N_segments > self.max_segments:
-            mesg = f"({self.glider}) Processing first {self.max_segments} out of {N_segments} only."
-            logger.info(mesg)
-            binned_filenames = binned_filenames[:self.max_segments]
+        if not self.segments is None:
+            if isinstance(self.segments, tuple):
+                s = slice(*self.segments)
+                mesg = f"({self.glider}) Processing segments {self.segments[0]}-{self.segments[1]} out of {N_segments} only."
+                binned_filenames = binned_filenames[s]
+            elif self.segments > 0:
+                mesg = f"({self.glider}) Processing segments first {self.segments} out of {N_segments} only."
+                binned_filenames = binned_filenames[:self.segments]
+            else:
+                mesg = f"({self.glider}) Processing segments last {self.segments} out of {N_segments} only."
+                binned_filenames = binned_filenames[-self.segments:]
+        logger.info(mesg)
         return binned_filenames
 
 
