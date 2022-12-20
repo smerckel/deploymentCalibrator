@@ -2,7 +2,7 @@ from collections import namedtuple, defaultdict
 import glob
 import os
 import pickle
-from logging import getLogger, basicConfig, INFO
+from logging import getLogger
 
 import arrow
 import numpy as np
@@ -15,7 +15,6 @@ from profiles.ctd import ThermalLag, iterprofiles
 from . import easy_gsw
 
 logger = getLogger("DeploymentCalibrator")
-basicConfig(level=INFO)
 
 Modelresultxtd = namedtuple("Modelresultxtd", "t u w U alpha pitch ww z heading depth lat lon density SA CT pot_density buoyancy_change C T P Craw".split())
 
@@ -166,7 +165,7 @@ class DeploymentCalibrator(object):
         tl_data = data.copy()
         ctd_tl = ThermalLag(tl_data)
         ctd_tl.interpolate_data(dt = 1)
-        ctd_tl.split_profiles()
+        #ctd_tl.split_profiles()
         if tau:
             ctd_tl.apply_short_time_mismatch(tau)
         ctd_tl.apply_thermal_lag_correction(alpha, beta,
@@ -268,9 +267,10 @@ class DeploymentCalibrator(object):
         ps = iterprofiles.ProfileSplitter(data)
         ps.split_profiles()
         mask = np.ones(data["time"].shape, int)
-        for p in ps:
-            mask[p.i_cast] = False
-        return mask.astype(bool), len(ps)
+        slices = ps.get_casts().slices
+        for s in slices:
+            mask[s] = False
+        return mask.astype(bool), ps.nop
         
     def calibrate_segment(self, glider_model, fns, parameters, min_depth=None, max_depth=None,
                           seconds_to_discard_after_pumping=None, balance_up_down=False, constraints=('dhdt')):
@@ -577,68 +577,6 @@ class DeploymentCalibrator(object):
                                          data['C'], data['T'], data['pressure'], data['Craw'])
         return model_resultxtd 
 
-
-
-    # def compute_glider_velocity2(self, glider_model, coefficients = {}):
-    #     '''Compute glider velocity using given glider model and, optionally,
-    #        interpolating functions for model coefficients.
-
-    #     Parameters
-    #     ----------
-    #     glider_model : {SteadyStateGliderModel, DynamicGliderModel}
-    #          an instance of a gliderflight glider model 
-
-    #     coeficients : dictionary of arrays
-    #         A dictionary with time and value arrays for all calibration parameters, for example
-    #         coefficients = {'t':[...], 'Cd0':[...], 'Vg':[...]}
- 
-        
-    #     Returns
-    #     -------
-    #     model_result : a named tuple with glider flight model results
-
-    #     This method takes a glider flight model and computes, with the given settings
-    #     the glider flight velocities. An optional dictionary with interpolating functions
-    #     for one or more coefficients can be supplied. These functions override the constant
-    #     values of named coefficients. 
-
-    #     The result returned is a named tuple, as defined in the gliderflight module, but with
-    #     heading as extra field, so that the results retured contain
-
-    #     t : time in seconds since epoch
-    #     u : horizontal velocity through water m/s
-    #     w : vertical velocity through water m/s
-    #     U : incident water velocity m/s
-    #     alpha : angle of attack rad
-    #     pitch : pitch rad
-    #     ww : vertical water velocity m/s (dh/dt - w)
-    #     heading : heading rad
-    #     '''
-    #     binned_filenames = self.get_binned_filenames()
-    #     r = []
-    #     for i, (tm, fns) in enumerate(binned_filenames):
-    #         print("(%s) Processing segment %d of a total of %d."%(self.glider, i+1, len(binned_filenames)))
-    #         if not fns:
-    #             continue
-    #         try:
-    #             data = self.get_data_dictionary(filenames = fns)
-    #         except ValueError:
-    #             continue
-    #         else:
-    #             if data is None:
-    #                 continue
-    #             glider_model.mask=None
-    #             glider_model.ensure_monotonicity(data)
-    #         for k in coefficients.keys():
-    #             if k=='t':
-    #                 continue
-    #             glider_model.__dict__[k] = coefficients[k](data["time"])
-    #         model_result = glider_model.solve(data)
-    #         r.append([*model_result, data['heading'], data['pressure']*10,
-    #                   data['lat'], data['lon'], data['density'], data['SA'],
-    #                   data['CT'], data['pot_density'], data['buoyancy_change']])
-    #     model_resultxtd = Modelresultxtd(*np.hstack(r))
-    #     return model_resultxtd 
     
     def construct_ifun(self, calibration_result, parameter):
         '''Constructor of interpolating function
@@ -687,7 +625,7 @@ class DeploymentCalibrator(object):
             else:
                 mesg = f"({self.glider}) Processing segments last {self.segments} out of {N_segments} only."
                 binned_filenames = binned_filenames[-self.segments:]
-        logger.info(mesg)
+            logger.info(mesg)
         return binned_filenames
 
 

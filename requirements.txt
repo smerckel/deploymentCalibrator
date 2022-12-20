@@ -1,3 +1,6 @@
 numpy>=1.0.0
 scipy>=1.0.0
-dbdreader>=0.3.9
+dbdreader>=0.4.11
+gsw>=3.4.2
+arrow
+matplotlib
