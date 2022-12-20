@@ -4,3 +4,4 @@ dbdreader>=0.4.11
 gsw>=3.4.2
 arrow
 matplotlib
+NetCDF4
